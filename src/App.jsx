@@ -27,9 +27,9 @@ export default function App() {
   const [baseRows, setBaseRows] = useState(3);
   const [spacingX, setSpacingX] = useState(2.1);
   const [spacingY, setSpacingY] = useState(1.05);
-  const [anchorOffset, setAnchorOffset] = useState(0.5); // world units along X
-  const [anchorY, setAnchorY] = useState(1); // normalized -1..1 along Y (anchor B)
-  const [angleDeg, setAngleDeg] = useState(45); // herringbone angle
+  const [anchorOffset, setAnchorOffset] = useState(0.3); // world units along X
+  const [anchorY, setAnchorY] = useState(0); // normalized -1..1 along Y (anchor B)
+  const [angleDeg, setAngleDeg] = useState(0); // align bricks
   const [stats, setStats] = useState({ placed: 0, instances: 0, open: 0 });
   const [isExporting, setIsExporting] = useState(false);
 

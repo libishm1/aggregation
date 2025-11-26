@@ -242,7 +242,8 @@ export class RuleBasedAggregator {
       .filter((s) => (skipSocketId ? s.id !== skipSocketId : true))
       .map((s) => transformSocket(s, matrix));
     // Expose top (and bottom for non-base to allow cross-stack connections).
-    const usableSockets = sockets.filter((s) => (isBase ? s.worldNormal.z > 0.5 : true));
+    // Only expose upward-facing sockets to grow above the base plane.
+    const usableSockets = sockets.filter((s) => s.worldNormal.z > 0.4);
 
     const id = mesh.name;
     this.instances.push({ id, matrix, bbox, mesh });
@@ -329,6 +330,12 @@ export class RuleBasedAggregator {
 
       const matrix = new THREE.Matrix4().compose(translation, finalQuat, new THREE.Vector3(1, 1, 1));
       const candidateBox = this.baseBoundingBox.clone().applyMatrix4(matrix).expandByScalar(-0.1); // looser fit, allow touching
+
+      // Reject if dipping below ground plane
+      if (candidateBox.min.z < 0) {
+        this.openSockets.splice(targetIndex, 1);
+        return false;
+      }
 
       let collides = false;
       for (const inst of this.instances) {
