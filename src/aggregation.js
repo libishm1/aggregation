@@ -27,7 +27,10 @@ const halfZ = sizeZ / 2;
 function buildProfileGeometry(profilePoints = defaultProfile) {
   const pts = Array.isArray(profilePoints) ? profilePoints : [];
   if (pts.length < 3) {
-    return new THREE.BoxGeometry(sizeX, sizeY, sizeZ);
+    return {
+      geometry: new THREE.BoxGeometry(sizeX, sizeY, sizeZ),
+      bounds: { minX: -halfX, maxX: halfX, minY: -halfY, maxY: halfY },
+    };
   }
 
   // Normalize the profile to fit the target size and center on the origin.
@@ -57,8 +60,22 @@ function buildProfileGeometry(profilePoints = defaultProfile) {
     });
 
   if (scaled.length < 3) {
-    return new THREE.BoxGeometry(sizeX, sizeY, sizeZ);
+    return {
+      geometry: new THREE.BoxGeometry(sizeX, sizeY, sizeZ),
+      bounds: { minX: -halfX, maxX: halfX, minY: -halfY, maxY: halfY },
+    };
   }
+
+  let scaledMinX = Infinity;
+  let scaledMinY = Infinity;
+  let scaledMaxX = -Infinity;
+  let scaledMaxY = -Infinity;
+  scaled.forEach((p) => {
+    scaledMinX = Math.min(scaledMinX, p.x);
+    scaledMinY = Math.min(scaledMinY, p.y);
+    scaledMaxX = Math.max(scaledMaxX, p.x);
+    scaledMaxY = Math.max(scaledMaxY, p.y);
+  });
 
   const shape = new THREE.Shape();
   shape.moveTo(scaled[0].x, scaled[0].y);
@@ -72,7 +89,10 @@ function buildProfileGeometry(profilePoints = defaultProfile) {
     bevelEnabled: false,
   });
   geometry.translate(0, 0, -halfZ); // center on z=0 with half-height up/down
-  return geometry;
+  return {
+    geometry,
+    bounds: { minX: scaledMinX, maxX: scaledMaxX, minY: scaledMinY, maxY: scaledMaxY },
+  };
 }
 
 export const defaultProfile = [
@@ -92,13 +112,18 @@ export function buildModule(
   anchorRotB = 0,
   profilePoints = defaultProfile
 ) {
-  const clampedX = Math.max(-halfX, Math.min(halfX, anchorX));
-  const clampDiag = (v) => Math.max(-halfY, Math.min(halfY, v * halfY));
-  const clampedYA = clampDiag(anchorDiagA);
-  const clampedYB = clampDiag(anchorDiagB);
-
   // Extrude the supplied profile in XY; fallback to box if invalid.
-  const geometry = buildProfileGeometry(profilePoints);
+  const { geometry, bounds } = buildProfileGeometry(profilePoints);
+
+  const spanX = Math.max(bounds.maxX - bounds.minX, 1e-6);
+  const spanY = Math.max(bounds.maxY - bounds.minY, 1e-6);
+  const anchorMargin = Math.min(spanX, spanY) * 0.05;
+  const clampX = (v) => Math.min(bounds.maxX - anchorMargin, Math.max(bounds.minX + anchorMargin, v));
+  const clampY = (v) => Math.min(bounds.maxY - anchorMargin, Math.max(bounds.minY + anchorMargin, v));
+
+  const clampedX = clampX(anchorX);
+  const clampedYA = clampY(anchorDiagA);
+  const clampedYB = clampY(anchorDiagB);
   const rotA = (anchorRotA * Math.PI) / 180;
   const rotB = (anchorRotB * Math.PI) / 180;
   const posTopA = new THREE.Vector3(clampedX, clampedYA, halfZ).applyAxisAngle(new THREE.Vector3(0, 0, 1), rotA);

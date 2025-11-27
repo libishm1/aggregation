@@ -12,6 +12,38 @@ import {
 } from "./aggregation.js";
 
 const skyColor = "#0b1620";
+const presetProfiles = {
+  rectangle: [
+    { x: 0, y: 0 },
+    { x: 1, y: 0 },
+    { x: 1, y: 1 },
+    { x: 0, y: 1 },
+  ],
+  pentagon: [
+    { x: 0.5, y: 0.95 },
+    { x: 0.12, y: 0.55 },
+    { x: 0.25, y: 0.12 },
+    { x: 0.75, y: 0.12 },
+    { x: 0.88, y: 0.55 },
+  ],
+  notch: [
+    { x: 0.05, y: 0.65 },
+    { x: 0.15, y: 0.82 },
+    { x: 0.35, y: 0.88 },
+    { x: 0.72, y: 0.88 },
+    { x: 0.9, y: 0.88 },
+    { x: 0.9, y: 0.78 },
+    { x: 0.7, y: 0.78 },
+    { x: 0.7, y: 0.58 },
+    { x: 0.55, y: 0.58 },
+    { x: 0.55, y: 0.35 },
+    { x: 0.4, y: 0.35 },
+    { x: 0.4, y: 0.2 },
+    { x: 0.25, y: 0.2 },
+    { x: 0.25, y: 0.45 },
+    { x: 0.1, y: 0.45 },
+  ],
+};
 
 export default function App() {
   const containerRef = useRef(null);
@@ -33,7 +65,9 @@ export default function App() {
   const [collisionMargin, setCollisionMargin] = useState(0);
   const [physicsEnabled, setPhysicsEnabled] = useState(false);
   const [profilePoints, setProfilePoints] = useState(defaultProfile);
+  const [profilePreset, setProfilePreset] = useState("rectangle");
   const [draggingIdx, setDraggingIdx] = useState(null);
+  const [draggingAnchor, setDraggingAnchor] = useState(null); // "A" or "B"
   const [anchorOffset, setAnchorOffset] = useState(0.3); // world units along X
   const [anchorY, setAnchorY] = useState(0); // normalized -1..1 along Y (anchor B)
   const [angleDeg, setAngleDeg] = useState(0); // align bricks
@@ -113,12 +147,14 @@ export default function App() {
   }, [profilePoints]);
 
   const updateProfilePoint = (idx, key, value) => {
+    setProfilePreset("custom");
     setProfilePoints((prev) =>
       prev.map((p, i) => (i === idx ? { ...p, [key]: Number(value) } : p))
     );
   };
 
   const addProfilePoint = () => {
+    setProfilePreset("custom");
     setProfilePoints((prev) => {
       const last = prev[prev.length - 1] || { x: 0, y: 0 };
       return [...prev, { x: last.x, y: last.y }];
@@ -150,15 +186,20 @@ export default function App() {
     const size = Math.max(maxX - minX, maxY - minY, 1);
     const nx = (p.x - cx) / size + 0.5;
     const ny = 0.5 - (p.y - cy) / size;
+    const baseX = nx * 220;
+    const baseY = ny * 220;
+    const dx = 110 - baseX;
+    const dy = 110 - baseY;
+    const len = Math.hypot(dx, dy) || 1;
+    const inset = 6;
     return {
-      x: nx * 200,
-      y: ny * 200,
+      x: baseX + (dx / len) * inset,
+      y: baseY + (dy / len) * inset,
     };
   };
 
   useEffect(() => {
     const handleMove = (e) => {
-      if (draggingIdx === null) return;
       const svg = profileSvgRef.current;
       if (!svg) return;
       const rect = svg.getBoundingClientRect();
@@ -170,14 +211,34 @@ export default function App() {
       const cy = (minY + maxY) / 2;
       const size = Math.max(maxX - minX, maxY - minY, 1);
 
-      const px = (nx - 0.5) * size + cx;
-      const py = (0.5 - ny) * size + cy;
-      setProfilePoints((prev) =>
-        prev.map((p, i) => (i === draggingIdx ? { ...p, x: px, y: py } : p))
-      );
+      if (draggingIdx !== null) {
+        const px = (nx - 0.5) * size + cx;
+        const py = (0.5 - ny) * size + cy;
+        setProfilePreset("custom");
+        setProfilePoints((prev) =>
+          prev.map((p, i) => (i === draggingIdx ? { ...p, x: px, y: py } : p))
+        );
+      } else if (draggingAnchor) {
+        const px = (nx - 0.5) * size + cx;
+        const py = (0.5 - ny) * size + cy;
+        const spanX = Math.max(maxX - minX, 1e-6);
+        const spanY = Math.max(maxY - minY, 1e-6);
+        const anchorMargin = Math.min(spanX, spanY) * 0.05;
+        const clampX = (v) => Math.min(maxX - anchorMargin, Math.max(minX + anchorMargin, v));
+        const clampY = (v) => Math.min(maxY - anchorMargin, Math.max(minY + anchorMargin, v));
+        if (draggingAnchor === "A") {
+          setAnchorOffset(clampX(px));
+        } else if (draggingAnchor === "B") {
+          setAnchorOffset(clampX(px));
+          setAnchorY(clampY(py));
+        }
+      }
     };
 
-    const handleUp = () => setDraggingIdx(null);
+    const handleUp = () => {
+      setDraggingIdx(null);
+      setDraggingAnchor(null);
+    };
 
     window.addEventListener("mousemove", handleMove);
     window.addEventListener("mouseup", handleUp);
@@ -185,7 +246,27 @@ export default function App() {
       window.removeEventListener("mousemove", handleMove);
       window.removeEventListener("mouseup", handleUp);
     };
-  }, [draggingIdx]);
+  }, [draggingIdx, draggingAnchor, computeProfileBounds]);
+
+  useEffect(() => {
+    if (profilePreset !== "custom" && presetProfiles[profilePreset]) {
+      // Clone to avoid shared references
+      setProfilePoints(presetProfiles[profilePreset].map((p) => ({ ...p })));
+    }
+  }, [profilePreset]);
+
+  const getClampedAnchors = () => {
+    const { minX, minY, maxX, maxY } = computeProfileBounds();
+    const spanX = Math.max(maxX - minX, 1e-6);
+    const spanY = Math.max(maxY - minY, 1e-6);
+    const anchorMargin = Math.min(spanX, spanY) * 0.05;
+    const clampX = (v) => Math.min(maxX - anchorMargin, Math.max(minX + anchorMargin, v));
+    const clampY = (v) => Math.min(maxY - anchorMargin, Math.max(minY + anchorMargin, v));
+    return {
+      A: { x: clampX(anchorOffset), y: clampY(0) },
+      B: { x: clampX(anchorOffset), y: clampY(anchorY) },
+    };
+  };
 
   useEffect(() => {
     const container = containerRef.current;
@@ -502,13 +583,26 @@ export default function App() {
 
         <div className="section">
           <div className="label">Extrusion profile (XY)</div>
+          <div className="row" style={{ alignItems: "center", gap: "8px", marginBottom: "8px" }}>
+            <label>Preset</label>
+            <select
+              value={profilePreset}
+              onChange={(e) => setProfilePreset(e.target.value)}
+            >
+              <option value="rectangle">Rectangle</option>
+              <option value="pentagon">Pentagon</option>
+              <option value="notch">Notch (shown)</option>
+              <option value="custom">Custom</option>
+            </select>
+            <button onClick={addProfilePoint}>Add point</button>
+          </div>
           <svg
             ref={profileSvgRef}
-            width="200"
-            height="200"
+            width="220"
+            height="220"
             style={{ border: "1px solid #1f2a38", background: "#0f1823", marginBottom: "8px" }}
           >
-            <rect x="0" y="0" width="200" height="200" fill="#0f1823" />
+            <rect x="0" y="0" width="220" height="220" fill="#0f1823" />
             <polygon
               points={profilePoints.map((p) => {
                 const { x, y } = profileToSvg(p);
@@ -518,6 +612,22 @@ export default function App() {
               stroke="#3ea6ff"
               strokeWidth="1.5"
             />
+            {Object.values(getClampedAnchors()).map((p, idx) => {
+              const { x, y } = profileToSvg(p);
+              return (
+                <circle
+                  key={`anchor-${idx}`}
+                  cx={x}
+                  cy={y}
+                  r="9"
+                  fill={idx === 0 ? "#8ef7ff" : "#ff944d"}
+                  stroke="#111722"
+                  strokeWidth="1.5"
+                  style={{ cursor: "grab" }}
+                  onMouseDown={() => setDraggingAnchor(idx === 0 ? "A" : "B")}
+                />
+              );
+            })}
             {profilePoints.map((p, idx) => {
               const { x, y } = profileToSvg(p);
               return (
@@ -525,7 +635,7 @@ export default function App() {
                   key={`pt-${idx}`}
                   cx={x}
                   cy={y}
-                  r="6"
+                  r="8"
                   fill="#ff944d"
                   stroke="#111722"
                   strokeWidth="1.5"
@@ -535,29 +645,7 @@ export default function App() {
               );
             })}
           </svg>
-          {profilePoints.map((p, idx) => (
-            <div key={`${idx}-${p.x}-${p.y}`} className="row">
-              <div className="chip">Pt {idx + 1}</div>
-              <input
-                type="number"
-                step="0.01"
-                value={p.x}
-                onChange={(e) => updateProfilePoint(idx, "x", e.target.value)}
-                placeholder="x"
-              />
-              <input
-                type="number"
-                step="0.01"
-                value={p.y}
-                onChange={(e) => updateProfilePoint(idx, "y", e.target.value)}
-                placeholder="y"
-              />
-            </div>
-          ))}
-          <div className="row">
-            <button onClick={addProfilePoint}>Add point</button>
-            <div className="note">Edit coordinates to reshape the profile; points extrude along +Z.</div>
-          </div>
+          <p className="note">Drag handles to reshape the profile; anchors (cyan/orange) stay inside the outline.</p>
         </div>
 
         <div className="section">
