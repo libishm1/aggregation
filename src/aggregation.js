@@ -17,12 +17,63 @@ const aggregateMaterial = new THREE.MeshStandardMaterial({
 });
 
 // Rectangular brick dimensions (x, y, z). Z is up.
-const sizeX = 2;
-const sizeY = 1;
-const sizeZ = 0.6;
+const sizeX = 0.4;
+const sizeY = 0.2;
+const sizeZ = 0.2;
 const halfX = sizeX / 2;
 const halfY = sizeY / 2;
 const halfZ = sizeZ / 2;
+
+function buildProfileGeometry(profilePoints = defaultProfile) {
+  const pts = Array.isArray(profilePoints) ? profilePoints : [];
+  if (pts.length < 3) {
+    return new THREE.BoxGeometry(sizeX, sizeY, sizeZ);
+  }
+
+  // Normalize the profile to fit the target size and center on the origin.
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  pts.forEach((p) => {
+    if (p?.x === undefined || p?.y === undefined) return;
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  });
+
+  const width = maxX - minX || 1;
+  const height = maxY - minY || 1;
+  const centerX = minX + width / 2;
+  const centerY = minY + height / 2;
+
+  const scaled = pts
+    .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y))
+    .map((p) => {
+      const x = ((p.x - centerX) / width) * sizeX;
+      const y = ((p.y - centerY) / height) * sizeY;
+      return new THREE.Vector2(x, y);
+    });
+
+  if (scaled.length < 3) {
+    return new THREE.BoxGeometry(sizeX, sizeY, sizeZ);
+  }
+
+  const shape = new THREE.Shape();
+  shape.moveTo(scaled[0].x, scaled[0].y);
+  for (let i = 1; i < scaled.length; i++) {
+    shape.lineTo(scaled[i].x, scaled[i].y);
+  }
+  shape.closePath();
+
+  const geometry = new THREE.ExtrudeGeometry(shape, {
+    depth: sizeZ,
+    bevelEnabled: false,
+  });
+  geometry.translate(0, 0, -halfZ); // center on z=0 with half-height up/down
+  return geometry;
+}
 
 export const defaultProfile = [
   { x: 0, y: 0 },
@@ -46,8 +97,8 @@ export function buildModule(
   const clampedYA = clampDiag(anchorDiagA);
   const clampedYB = clampDiag(anchorDiagB);
 
-  // Use a simple box geometry; profile editor disabled in this mode.
-  const geometry = new THREE.BoxGeometry(sizeX, sizeY, sizeZ);
+  // Extrude the supplied profile in XY; fallback to box if invalid.
+  const geometry = buildProfileGeometry(profilePoints);
   const rotA = (anchorRotA * Math.PI) / 180;
   const rotB = (anchorRotB * Math.PI) / 180;
   const posTopA = new THREE.Vector3(clampedX, clampedYA, halfZ).applyAxisAngle(new THREE.Vector3(0, 0, 1), rotA);
@@ -160,10 +211,13 @@ export class RuleBasedAggregator {
     rules = defaultRules,
     compatibility = defaultCompatibility,
     seed = "demo",
+    collisionMargin = 0,
   } = {}) {
     this.moduleDef = moduleDef;
     this.rules = rules;
     this.compatibility = compatibility;
+    // Allow slight shrink/expansion of the bounding box. Negative = relaxed fit.
+    this.collisionMargin = Math.min(0.1, Math.max(-0.05, collisionMargin));
     // Anchors: primary and secondary; fall back to socket data if not provided.
     const firstSocket = this.moduleDef.sockets?.[0];
     this.anchorA = {
@@ -246,10 +300,10 @@ export class RuleBasedAggregator {
     const usableSockets = sockets.filter((s) => s.worldNormal.z > 0.4);
 
     const id = mesh.name;
-    this.instances.push({ id, matrix, bbox, mesh });
+    this.instances.push({ id, matrix, bbox, mesh, isBase });
 
     if (this.gizmoGroup) {
-      const sphereGeo = new THREE.SphereGeometry(0.08, 12, 12);
+      const sphereGeo = new THREE.SphereGeometry(0.02, 12, 12);
       const colors = {
         "stackA-top": 0xff944d,
         "stackA-bottom": 0xff944d,
@@ -329,7 +383,11 @@ export class RuleBasedAggregator {
 
 
       const matrix = new THREE.Matrix4().compose(translation, finalQuat, new THREE.Vector3(1, 1, 1));
-      const candidateBox = this.baseBoundingBox.clone().applyMatrix4(matrix).expandByScalar(-0.1); // looser fit, allow touching
+      // Keep a configurable positive margin to prevent overlap in packing.
+      const candidateBox = this.baseBoundingBox
+        .clone()
+        .applyMatrix4(matrix)
+        .expandByScalar(this.collisionMargin);
 
       // Reject if dipping below ground plane
       if (candidateBox.min.z < 0) {
@@ -386,13 +444,65 @@ export class RuleBasedAggregator {
     }
     return { placed, remainingSockets: this.openSockets.length, totalInstances: this.instances.length };
   }
+
+  // Simple settle: drop non-base instances straight down until they rest on the ground or supporting boxes (no dynamics).
+  settleInstances(enable = false) {
+    if (!enable) return;
+    const overlaps2D = (a, b) =>
+      !(
+        a.max.x <= b.min.x + EPS ||
+        a.min.x >= b.max.x - EPS ||
+        a.max.y <= b.min.y + EPS ||
+        a.min.y >= b.max.y - EPS
+      );
+
+    const staticSupports = this.instances
+      .filter((inst) => inst.isBase)
+      .map((inst) => ({ bbox: inst.bbox.clone() }));
+
+    const movable = this.instances
+      .filter((inst) => !inst.isBase)
+      .sort((a, b) => a.bbox.min.z - b.bbox.min.z);
+
+    const settled = [...staticSupports];
+
+    for (const inst of movable) {
+      // Recompute bbox from current matrix to avoid drift.
+      let bbox = this.baseBoundingBox.clone().applyMatrix4(inst.matrix);
+      let targetMinZ = 0;
+      for (const support of settled) {
+        if (!overlaps2D(bbox, support.bbox)) continue;
+        targetMinZ = Math.max(targetMinZ, support.bbox.max.z);
+      }
+      const delta = targetMinZ - bbox.min.z;
+      if (Math.abs(delta) > EPS) {
+        inst.matrix = inst.matrix.clone();
+        inst.matrix.elements[14] += delta;
+        inst.mesh.matrix.copy(inst.matrix);
+        inst.mesh.updateMatrixWorld(true);
+        bbox.translate(new THREE.Vector3(0, 0, delta));
+      }
+      inst.bbox = bbox;
+      settled.push({ bbox });
+    }
+  }
 }
 
 export function exportGroupAsGLB(group, onProgress) {
   const exporter = new GLTFExporter();
+  const exportRoot = group.clone(true);
+  exportRoot.updateMatrixWorld(true);
+
+  // Apply unit scaling (0.1) and rotate from Three.js Y-up to Rhino Z-up (Y -> Z, Z -> -Y).
+  const scale = new THREE.Matrix4().makeScale(0.1, 0.1, 0.1);
+  const rhinoTransform = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
+  exportRoot.applyMatrix4(scale);
+  exportRoot.applyMatrix4(rhinoTransform);
+  exportRoot.updateMatrixWorld(true);
+
   return new Promise((resolve, reject) => {
     exporter.parse(
-      group,
+      exportRoot,
       (result) => {
         if (result instanceof ArrayBuffer) {
           resolve(new Blob([result], { type: "model/gltf-binary" }));
